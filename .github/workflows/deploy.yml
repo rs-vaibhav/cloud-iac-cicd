@@ -1,0 +1,124 @@
+# Merge to main -> apply infra and deploy to dev automatically.
+# Prod is a manual run that waits for approval on the "prod" GitHub environment.
+name: deploy
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        options: [dev, prod]
+        default: dev
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-${{ github.event.inputs.environment || 'dev' }}
+  cancel-in-progress: false   # never cancel a running terraform apply
+
+env:
+  TF_VERSION: 1.9.8
+  ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+  ARM_USE_OIDC: "true"
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+jobs:
+  infra:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    outputs:
+      acr: ${{ steps.out.outputs.acr }}
+      aks: ${{ steps.out.outputs.aks }}
+      rg: ${{ steps.out.outputs.rg }}
+      kv: ${{ steps.out.outputs.kv }}
+      kv_client_id: ${{ steps.out.outputs.kv_client_id }}
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: "${{ env.TF_VERSION }}", terraform_wrapper: false }
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - run: terraform init -input=false -backend-config=envs/${ENVIRONMENT}.backend.hcl
+      - run: terraform plan -input=false -var-file=envs/${ENVIRONMENT}.tfvars -out=tfplan
+      - run: terraform apply -input=false tfplan
+      - id: out
+        run: |
+          echo "acr=$(terraform output -raw acr_login_server)" >> "$GITHUB_OUTPUT"
+          echo "aks=$(terraform output -raw aks_name)" >> "$GITHUB_OUTPUT"
+          echo "rg=$(terraform output -raw resource_group)" >> "$GITHUB_OUTPUT"
+          echo "kv=$(terraform output -raw key_vault_name)" >> "$GITHUB_OUTPUT"
+          echo "kv_client_id=$(terraform output -raw key_vault_csi_client_id)" >> "$GITHUB_OUTPUT"
+
+  build-and-deploy:
+    needs: infra
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    env:
+      ACR: ${{ needs.infra.outputs.acr }}
+      TAG: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build and push images to ACR
+        run: |
+          az acr login --name "${ACR%%.*}"
+          docker build --build-arg APP_VERSION=$TAG -t $ACR/notes-api:$TAG app/api
+          docker build -t $ACR/notes-web:$TAG app/web
+          docker push $ACR/notes-api:$TAG
+          docker push $ACR/notes-web:$TAG
+
+      - uses: azure/use-kubelogin@v1
+        with: { kubelogin-version: v0.1.4 }
+      - name: Get AKS credentials (Entra ID)
+        run: |
+          az aks get-credentials -g ${{ needs.infra.outputs.rg }} -n ${{ needs.infra.outputs.aks }} --overwrite-existing
+          kubelogin convert-kubeconfig -l azurecli
+
+      - name: Install ingress-nginx (idempotent)
+        run: |
+          helm upgrade --install ingress-nginx ingress-nginx --repo https://kubernetes.github.io/ingress-nginx \
+            --namespace ingress-nginx --create-namespace --wait \
+            --set controller.service.annotations."service\.beta\.kubernetes\.io/azure-load-balancer-health-probe-request-path"=/healthz
+
+      - name: Deploy with kustomize
+        env:
+          KEY_VAULT_NAME: ${{ needs.infra.outputs.kv }}
+          KV_CSI_CLIENT_ID: ${{ needs.infra.outputs.kv_client_id }}
+          TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        run: |
+          cd k8s/overlays/$ENVIRONMENT
+          kustomize edit set image notes-api=$ACR/notes-api:$TAG notes-web=$ACR/notes-web:$TAG
+          kustomize build . | envsubst '${KEY_VAULT_NAME} ${KV_CSI_CLIENT_ID} ${TENANT_ID}' | kubectl apply -f -
+
+      - name: Wait for rollout, roll back on failure
+        run: |
+          for d in notes-api notes-web; do
+            if ! kubectl -n notes rollout status deploy/$d --timeout=180s; then
+              echo "::error::$d rollout failed - rolling back"
+              kubectl -n notes rollout undo deploy/$d
+              exit 1
+            fi
+          done
+
+      - name: Smoke test through the ingress
+        run: |
+          IP=$(kubectl -n ingress-nginx get svc ingress-nginx-controller -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          for i in $(seq 1 20); do curl -fsS http://$IP/healthz && exit 0; sleep 6; done
+          exit 1

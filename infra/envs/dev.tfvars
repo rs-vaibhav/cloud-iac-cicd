@@ -1,0 +1,9 @@
+environment         = "dev"
+location            = "centralindia"
+vnet_cidr           = "10.10.0.0/16"
+aks_vm_size         = "Standard_B2s"
+aks_node_count      = 1
+aks_max_nodes       = 2
+postgres_sku        = "B_Standard_B1ms"
+postgres_storage_mb = 32768
+postgres_ha         = false

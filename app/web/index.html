@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Notes</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; color: #1f2937; }
+    form { display: flex; gap: 8px; margin-bottom: 24px; }
+    input { flex: 1; padding: 8px; border: 1px solid #d1d5db; border-radius: 6px; }
+    button { padding: 8px 14px; border: 0; border-radius: 6px; background: #2563eb; color: #fff; cursor: pointer; }
+    li { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #e5e7eb; }
+    li button { background: #ef4444; }
+    small { color: #6b7280; }
+  </style>
+</head>
+<body>
+  <h1>Notes</h1>
+  <small id="version"></small>
+  <form id="f">
+    <input id="title" placeholder="New note" required maxlength="200">
+    <button>Add</button>
+  </form>
+  <ul id="list"></ul>
+  <script>
+    const list = document.getElementById("list");
+    async function load() {
+      const notes = await (await fetch("/api/notes")).json();
+      list.innerHTML = "";
+      for (const n of notes) {
+        const li = document.createElement("li");
+        li.textContent = n.title;
+        const del = document.createElement("button");
+        del.textContent = "Delete";
+        del.onclick = async () => { await fetch(`/api/notes/${n.id}`, { method: "DELETE" }); load(); };
+        li.appendChild(del);
+        list.appendChild(li);
+      }
+    }
+    document.getElementById("f").onsubmit = async (e) => {
+      e.preventDefault();
+      const t = document.getElementById("title");
+      await fetch("/api/notes", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: t.value }) });
+      t.value = "";
+      load();
+    };
+    fetch("/healthz").then(r => r.json()).then(h => document.getElementById("version").textContent = "api " + h.version);
+    load();
+  </script>
+</body>
+</html>

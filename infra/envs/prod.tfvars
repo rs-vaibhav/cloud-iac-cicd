@@ -1,0 +1,9 @@
+environment         = "prod"
+location            = "centralindia"
+vnet_cidr           = "10.20.0.0/16"
+aks_vm_size         = "Standard_D2s_v5"
+aks_node_count      = 2
+aks_max_nodes       = 5
+postgres_sku        = "GP_Standard_D2s_v3"
+postgres_storage_mb = 65536
+postgres_ha         = true

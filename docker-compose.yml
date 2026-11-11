@@ -1,0 +1,25 @@
+# Run all three tiers locally:  docker compose up --build  ->  http://localhost:8080
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: notes
+      POSTGRES_PASSWORD: notes-local-only
+      POSTGRES_DB: notes
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "notes"]
+      interval: 5s
+      retries: 10
+
+  notes-api:
+    build: ./app/api
+    environment:
+      DATABASE_URL: postgresql://notes:notes-local-only@db:5432/notes
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build: ./app/web
+    ports: ["8080:8080"]
+    depends_on: [notes-api]

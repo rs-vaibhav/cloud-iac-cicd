@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notes-web
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: notes-web }
+  template:
+    metadata:
+      labels: { app: notes-web }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: web
+          image: notes-web
+          ports: [{ containerPort: 8080, name: http }]
+          env:
+            - { name: API_HOST, value: notes-api }
+          resources:
+            requests: { cpu: 50m, memory: 32Mi }
+            limits: { cpu: 200m, memory: 64Mi }
+          readinessProbe:
+            httpGet: { path: /, port: http }
+          livenessProbe:
+            httpGet: { path: /, port: http }
+            initialDelaySeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notes-web
+spec:
+  selector: { app: notes-web }
+  ports: [{ port: 80, targetPort: http, name: http }]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: notes-web
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app: notes-web } }
