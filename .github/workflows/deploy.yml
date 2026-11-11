@@ -29,7 +29,25 @@ env:
   ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
 jobs:
+  check-secrets:
+    name: Check Azure Credentials
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - id: check
+        run: |
+          if [ -n "${{ secrets.AZURE_CLIENT_ID }}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "Azure credentials found. Proceeding with deployment."
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Azure credentials (AZURE_CLIENT_ID) not configured. Skipping live deployment. Refer to README.md for CI/CD setup instructions."
+          fi
+
   infra:
+    needs: check-secrets
+    if: needs.check-secrets.outputs.configured == 'true'
     runs-on: ubuntu-latest
     environment: ${{ github.event.inputs.environment || 'dev' }}
     outputs:
